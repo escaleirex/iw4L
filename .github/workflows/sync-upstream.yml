@@ -1,0 +1,99 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/vladtrc/iw4L.git
+  NDK_VERSION: 28.2.13676358
+  CARGO_NDK_VERSION: 4.1.2
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # A merge that brings upstream workflow files can only be pushed with a
+      # token that has the `workflow` scope; SYNC_TOKEN is that token when set.
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Merge upstream master
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream master
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "state=current" >> "$GITHUB_OUTPUT"
+          elif git merge --no-edit upstream/master; then
+            echo "state=merged" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+            echo "state=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Android toolchain
+        if: steps.merge.outputs.state == 'merged'
+        run: |
+          rustup show active-toolchain
+          rustup target add aarch64-linux-android
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.merge.outputs.state == 'merged'
+        with:
+          key: android
+
+      - name: Android runtime still compiles
+        if: steps.merge.outputs.state == 'merged'
+        run: |
+          cargo ndk -t arm64-v8a -P 31 check --locked -p android_runtime \
+            --features iw4-runtime --profile android 2>&1 | tee "$RUNNER_TEMP/check.log"
+
+      - name: Push the merge
+        if: steps.merge.outputs.state == 'merged'
+        run: git push origin HEAD:master
+
+      - name: Report
+        if: failure() || steps.merge.outputs.state == 'conflict'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Upstream sync needs a hand"
+          if [ -f "$RUNNER_TEMP/conflicts.txt" ]; then
+            body="Merging upstream master conflicts in:"$'\n\n'"$(sed 's/^/- /' "$RUNNER_TEMP/conflicts.txt")"
+          elif [ -f "$RUNNER_TEMP/check.log" ]; then
+            body="Upstream merged cleanly but the Android runtime no longer compiles:"$'\n\n```\n'"$(grep -E '^error' -A12 "$RUNNER_TEMP/check.log" | head -80)"$'\n```'
+          else
+            body="The sync job failed before the Android check."
+          fi
+          body="$body"$'\n\n'"master was left unchanged. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body" || echo "::warning::could not comment on issue #$existing"
+          else
+            gh issue create --title "$title" --body "$body" || echo "::warning::issues are disabled on this repository"
+          fi
+          echo "::error::$title"
+          exit 1
