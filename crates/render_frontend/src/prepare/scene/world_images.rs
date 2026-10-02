@@ -127,6 +127,10 @@ fn paint_probe_debug(image: &mut Image, mode: ProbeDebug) {
     }
 }
 
+fn owned_image(image: Arc<Image>) -> Image {
+    Arc::try_unwrap(image).unwrap_or_else(|shared| (*shared).clone())
+}
+
 fn image_bytes(image: &Image) -> u64 {
     image
         .data
@@ -471,7 +475,7 @@ impl WorldImageUpload {
                 // and lets its own copy go: the two are the same texels under
                 // the same sampler, and a second `add` is a second texture.
                 let Some(variant) = variant else {
-                    return images.add((*image).clone());
+                    return images.add(owned_image(image));
                 };
                 if let Some(handle) = self.exact_by_variant.get(&variant) {
                     if common_owned && self.common_profile_id != 0 {
@@ -496,7 +500,7 @@ impl WorldImageUpload {
                     self.exact_by_variant.insert(variant, handle.clone());
                     return handle;
                 }
-                let handle = images.add((*image).clone());
+                let handle = images.add(owned_image(image));
                 if common_owned && self.common_profile_id != 0 {
                     common.by_variant.insert(variant, handle.clone());
                 }

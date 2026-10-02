@@ -25,6 +25,9 @@ use crate::args::{AcceptanceLaunch, LaunchMode};
 use crate::bench;
 use crate::plugins::{add_runtime_plugins, add_runtime_plugins_with_role};
 
+#[cfg(target_os = "android")]
+pub static ANDROID_SESSION: std::sync::OnceLock<fn(&mut App)> = std::sync::OnceLock::new();
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
     Listen,
@@ -391,6 +394,13 @@ fn run_menu(
             layers
         });
     add_runtime_plugins(&mut app);
+    #[cfg(target_os = "android")]
+    {
+        app.insert_resource(bevy::winit::WinitSettings::mobile());
+        if let Some(install) = ANDROID_SESSION.get() {
+            install(&mut app);
+        }
+    }
     if let Some(capture) = CaptureRequest::from_env() {
         queue_launch_capture(
             &mut app,
@@ -503,7 +513,9 @@ fn run_map(
         artifacts,
     };
     start_perf(Some(zone.clone()), role_name(config.role));
-    let (mut menus, menu_report) = load_ui_menu_catalog(&games);
+    note_rss("before menus");
+    let (mut menus, menu_report) = shell_menus(&games);
+    note_rss("after menus");
     ui::install_frontend_menus(&mut menus).unwrap_or_else(|error| fatal(&error));
     for line in &menu_report {
         diag::info!(Launch, "{line}");
@@ -526,6 +538,8 @@ fn run_map(
         app.insert_resource(bevy::winit::WinitSettings::continuous())
             .insert_resource(frame::Headless);
     }
+    #[cfg(target_os = "android")]
+    app.insert_resource(bevy::winit::WinitSettings::mobile());
     app.add_plugins(crate::plugins::default_plugins_with_quiet_log(
         WindowPlugin {
             exit_condition: if dedicated {
@@ -615,6 +629,11 @@ fn run_map(
     if let Some(capture) = CaptureRequest::from_env() {
         queue_launch_capture(&mut app, capture);
     }
+    #[cfg(target_os = "android")]
+    if let Some(install) = ANDROID_SESSION.get() {
+        install(&mut app);
+    }
+    note_rss("before run");
     bench::announce_runtime(&mut app);
     let bench = bench::enabled();
     if bench {
@@ -631,6 +650,37 @@ fn run_map(
     let trace = flush_perf();
     if bench {
         bench::finish(&config.artifacts, trace);
+    }
+}
+
+fn note_rss(stage: &str) {
+    #[cfg(target_os = "android")]
+    {
+        let rss = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("VmRSS:")
+                        .and_then(|rest| rest.split_whitespace().next())
+                        .and_then(|kb| kb.parse::<u64>().ok())
+                })
+            });
+        eprintln!("rss {stage}: {rss:?} KB");
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = stage;
+    }
+}
+
+fn shell_menus(games: &asset_transport::GamesRoot) -> (asset_game::MenuCatalog, Vec<String>) {
+    #[cfg(target_os = "android")]
+    {
+        asset_game::load_ui_menu_defs(games)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        load_ui_menu_catalog(games)
     }
 }
 

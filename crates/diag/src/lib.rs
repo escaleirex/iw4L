@@ -239,6 +239,11 @@ pub fn exit_launch_error(message: &str) -> ! {
             );
         }
     }
+    eprintln!("{message}");
+    let _ = std::fs::write("launch-error.txt", message);
+    #[cfg(target_os = "android")]
+    std::process::abort();
+    #[cfg(not(target_os = "android"))]
     std::process::exit(2);
 }
 

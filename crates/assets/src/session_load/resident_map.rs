@@ -81,6 +81,10 @@ pub async fn load_prepared_match(
     let MatchLoadOutcome::Ready(mut prepared) = outcome else {
         return outcome;
     };
+    if std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1") {
+        prepared.report.extend(progress.timing_report());
+        return MatchLoadOutcome::Ready(prepared);
+    }
     if let (Some(zone), Some(common)) = (stamp, common) {
         let keeping = std::time::Instant::now();
         let resident = prepared.clone();

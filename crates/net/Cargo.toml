@@ -34,3 +34,7 @@ zstd = { version = "0.13", default-features = false }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies.bevy]
+workspace = true
+features = ["x11", "wayland", "bevy_gilrs", "system_clipboard"]

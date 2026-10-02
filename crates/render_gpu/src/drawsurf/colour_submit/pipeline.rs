@@ -23,8 +23,13 @@ pub fn cached_lighting_port_variant(
 fn adapt_admitted_port(port: &crate::AdmittedExactPort) -> ExactColourPortGpu {
     let (constants, textures) = split_bind_layout(port.wgpu_layout());
     let vertex_buffers = crate::vertex_layouts_from_contract(port.wgpu_layout());
-    let (cached_source, cached_vertex_buffers) =
-        cached_lighting_port_variant(port, &vertex_buffers);
+    // Slim keeps no cached-lighting variant: every key is built with
+    // `cached_lighting: false`.
+    let (cached_source, cached_vertex_buffers) = if android_slim() {
+        (None, Vec::new())
+    } else {
+        cached_lighting_port_variant(port, &vertex_buffers)
+    };
 
     let cached_source = cached_source
         .filter(|_| !cached_vertex_buffers.is_empty())
@@ -81,9 +86,13 @@ pub(super) fn kick_extracted_colour_pipelines(
 ) {
     registry.poll();
 
+    let slim = android_slim();
     for key in registry.take_discovered() {
         if pipeline.get(key.port).is_some() {
-            request_exact_pipeline(&mut registry, &pipeline, &device, key);
+            let slot = request_exact_pipeline(&mut registry, &pipeline, &device, key);
+            if slim && kicked.scheduled.insert(key) {
+                kicked.current.push(slot);
+            }
         }
     }
     let extracted = world
@@ -147,16 +156,18 @@ pub(super) fn kick_admitted_pipelines(
         kicked.scheduled.clear();
         kicked.generation = Some(extracted.world.generation);
         kicked.views = view_sig.clone();
-        schedule_admitted_pipelines(
-            extracted,
-            prepared_table,
-            &view_sig,
-            registry,
-            pipeline,
-            device,
-            &mut kicked.scheduled,
-            &mut kicked.current,
-        );
+        if !android_slim() {
+            schedule_admitted_pipelines(
+                extracted,
+                prepared_table,
+                &view_sig,
+                registry,
+                pipeline,
+                device,
+                &mut kicked.scheduled,
+                &mut kicked.current,
+            );
+        }
         kicked.demand_revision = extracted.frame.pipeline_demand_revision;
         diag::info!(
             World,
@@ -165,7 +176,7 @@ pub(super) fn kick_admitted_pipelines(
             registry.module_n(),
             registry.building_n()
         );
-    } else if demand_changed {
+    } else if demand_changed && !android_slim() {
         let before = kicked.current.len();
         schedule_admitted_pipelines(
             extracted,
@@ -196,6 +207,11 @@ pub(super) fn kick_admitted_pipelines(
             .filter(|slot| registry.is_ready(**slot))
             .count() as u32,
     };
+}
+
+fn android_slim() -> bool {
+    static SLIM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SLIM.get_or_init(|| std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1"))
 }
 
 fn schedule_admitted_pipelines(

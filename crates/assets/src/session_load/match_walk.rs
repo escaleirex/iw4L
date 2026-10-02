@@ -2,6 +2,26 @@ use super::*;
 
 static NEXT_PRODUCTS_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+fn open_map_zone(
+    zone_ff: Result<PathBuf, String>,
+    progress: LoadProgress,
+) -> Result<(PathBuf, std::sync::Arc<asset_transport::ZoneImage>), String> {
+    let path = match zone_ff {
+        Ok(path) => path,
+        Err(error) => {
+            progress.record_skipped_scoped(StageId::MapAssets, "open");
+            return Err(format!("zone not found: {error}"));
+        }
+    };
+    let stage = progress.begin_scoped(StageId::MapAssets, "open", None);
+    progress.begin_zone_open();
+    let opened = open_zone_shared(&path);
+    finish_zone_open(stage, &opened);
+    let image = opened.map_err(|error| format!("open zone: {error}"))?;
+    progress.record_zone_image_bytes(image.bytes.len());
+    Ok((path, image))
+}
+
 pub(super) async fn walk_prepared_match(
     zone_ff: Result<PathBuf, String>,
     common_mp: Result<PathBuf, String>,
@@ -15,25 +35,13 @@ pub(super) async fn walk_prepared_match(
         .unwrap_or_default();
 
     let pool = load_pool();
-    let map_open = {
+    let slim = std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1");
+    let map_open = if slim {
+        None
+    } else {
         let zone_ff = zone_ff.clone();
         let progress = progress.clone();
-        pool.spawn(async move {
-            let path = match zone_ff {
-                Ok(path) => path,
-                Err(error) => {
-                    progress.record_skipped_scoped(StageId::MapAssets, "open");
-                    return Err(format!("zone not found: {error}"));
-                }
-            };
-            let stage = progress.begin_scoped(StageId::MapAssets, "open", None);
-            progress.begin_zone_open();
-            let opened = open_zone_shared(&path);
-            finish_zone_open(stage, &opened);
-            let image = opened.map_err(|error| format!("open zone: {error}"))?;
-            progress.record_zone_image_bytes(image.bytes.len());
-            Ok::<_, String>((path, image))
-        })
+        Some(pool.spawn(async move { open_map_zone(zone_ff, progress) }))
     };
 
     let mut donor_report = Vec::new();
@@ -54,6 +62,20 @@ pub(super) async fn walk_prepared_match(
     }
 
     let cloning = std::time::Instant::now();
+    let fpv_plan = common.fpv_plan.clone();
+    let common_key = common.key.to_string();
+    let prepared_ms = common.prepared_ms;
+    let ready_elapsed = common.ready_at.elapsed().as_secs_f32();
+    let donor_batches = common.donor_batches();
+    let retained_payloads = common.retained_payloads();
+    let retained_mib = common.retained_bytes() as f64 / (1024.0 * 1024.0);
+    if slim {
+        asset_transport::log_rss("before common clone");
+    }
+    let products = common.products.clone();
+    if slim {
+        asset_transport::log_rss("after common clone");
+    }
     let CommonProducts {
         scripts: mut iw4_scripts,
         mut t5_scene_models,
@@ -99,26 +121,29 @@ pub(super) async fn walk_prepared_match(
             },
         report: mut common_report,
         localize_report,
-    } = common.products.clone();
+    } = products;
     let clone_ms = cloning.elapsed().as_secs_f32() * 1000.0;
     let iw5_mat_n = iw5_materials.materials.len();
     common_report.append(&mut donor_report);
     common_report.push(format!(
-        "common set: {reach} for {} (prepared in {:.0}ms, {:.1}s ago); match copy {clone_ms:.0}ms; {} donor image batches and {} kept payloads ({:.1}MiB) shared, not decoded again",
-        common.key,
-        common.prepared_ms,
-        common.ready_at.elapsed().as_secs_f32(),
-        common.donor_batches(),
-        common.retained_payloads(),
-        common.retained_bytes() as f64 / (1024.0 * 1024.0),
+        "common set: {reach} for {common_key} (prepared in {prepared_ms:.0}ms, {:.1}s ago); match copy {clone_ms:.0}ms; {donor_batches} donor image batches and {retained_payloads} kept payloads ({retained_mib:.1}MiB) shared, not decoded again",
+        ready_elapsed,
     ));
     let common_images = hold_image_plan(
         "common_mp FPV",
-        common.fpv_plan.clone(),
+        fpv_plan,
         load_jobs::open(JobKind::ImageDecode).namespace("iw4"),
     );
 
-    let opened_map = map_open.await;
+    let opened_map = match map_open {
+        Some(task) => task.await,
+        None => {
+            asset_transport::log_rss("before map zone");
+            let opened = open_map_zone(zone_ff.clone(), progress.clone());
+            asset_transport::log_rss("after map zone");
+            opened
+        }
+    };
     if progress.is_canceled() {
         drop(opened_map);
         diag::info!(

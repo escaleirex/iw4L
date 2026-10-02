@@ -1,4 +1,5 @@
 pub mod artifact_cache;
+pub mod data_source;
 pub mod discover;
 pub mod iwd;
 pub mod load_jobs;
@@ -30,6 +31,6 @@ pub use progress::{
 };
 pub use steam::{MW2_SHORTCUT, SteamCandidate, SteamProbe, link_steam_mw2};
 pub use zone::{
-    Iw4WireFormat, Iw5ZoneMemory, T5ZoneMemory, ZoneImage, ZoneMemory, ZoneOpenError, open_zone,
-    open_zone_shared, parse_zone_image, xfile_arena_row, zone_share_counts,
+    Iw4WireFormat, Iw5ZoneMemory, T5ZoneMemory, ZoneImage, ZoneMemory, ZoneOpenError, log_rss,
+    open_zone, open_zone_shared, parse_zone_image, xfile_arena_row, zone_share_counts,
 };

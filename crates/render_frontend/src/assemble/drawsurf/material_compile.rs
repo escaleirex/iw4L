@@ -399,20 +399,30 @@ impl MaterialProgramCompile {
         let merged = self.pending.len() as u64;
         self.pending.clear();
         self.absorb_at = 0;
+        self.progress = None;
+        self.task = None;
+        if !self.jobs.is_empty() {
+            self.done = self.total.saturating_sub(self.jobs.len() as u32);
+            if let Some(stage) = self.merge_stage.take() {
+                stage.set_completed(merged);
+                stage.done();
+            }
+            return false;
+        }
         self.done = self.total;
         if let Some(stage) = self.merge_stage.take() {
             stage.set_completed(merged);
             stage.done();
         }
-        self.progress = None;
-        self.task = None;
         true
     }
 
     /// Compiled outcomes arrive as one block; publishing them is its own pass
     /// over that block, with its own count.
     fn take_outcomes(&mut self, outcomes: Vec<PassOutcome>) {
-        self.finish_compile();
+        if self.jobs.is_empty() {
+            self.finish_compile();
+        }
         if let Some(load) = &self.load {
             self.merge_stage = Some(load.begin(
                 asset_transport::StageId::ProgramMerge,
@@ -452,7 +462,13 @@ impl MaterialProgramCompile {
             return self.absorb_pending(deadline);
         }
         if self.task.is_none() {
-            let jobs = std::mem::take(&mut self.jobs);
+            let batch = if std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1") {
+                64
+            } else {
+                usize::MAX
+            };
+            let take_n = batch.min(self.jobs.len());
+            let jobs: Vec<_> = self.jobs.drain(..take_n).collect();
             if jobs.is_empty() {
                 self.done = self.total;
                 self.finish_compile();
@@ -484,7 +500,7 @@ impl MaterialProgramCompile {
                     .map(|t| t.elapsed().as_secs_f32() * 1000.0)
                     .unwrap_or(0.0);
                 self.take_outcomes(outcomes);
-                let _ = self.absorb_pending(None);
+                let finished = self.absorb_pending(None);
                 diag::info!(
                     World,
                     "world spawn compile pool: finished jobs={} ports={} {:.1}ms",
@@ -492,7 +508,7 @@ impl MaterialProgramCompile {
                     self.ports.len(),
                     wall_ms
                 );
-                return true;
+                return finished;
             }
         }
         self.sync_progress();

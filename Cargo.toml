@@ -7,6 +7,7 @@ quinn-proto = { git = "https://github.com/quinn-rs/quinn", rev = "f650e0f213b01e
 [workspace]
 resolver = "3"
 members = [
+    "crates/android_runtime",
     "crates/anim_iw4",
     "crates/approved_tests",
     "crates/asset_core",
@@ -89,12 +90,9 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_sprite",
     "bevy_sprite_render",
     "bevy_asset",
-    "bevy_gilrs",
+    "bevy_clipboard",
     "multi_threaded",
-    "x11",
-    "wayland",
     "png",
-    "system_clipboard",
     "bevy_ui_widgets",
     "ui_picking",
 ] }
@@ -232,3 +230,11 @@ strip = "symbols"
 inherits = "play"
 debug = 1
 strip = "none"
+
+[profile.android]
+inherits = "dev"
+opt-level = 1
+debug = 1
+
+[profile.android.package."*"]
+opt-level = 2

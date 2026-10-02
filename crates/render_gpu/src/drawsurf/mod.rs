@@ -4,6 +4,7 @@ mod colour_submit;
 mod depth_range;
 mod draw;
 mod exact_pipeline;
+mod exact_pipeline_spirv;
 mod floatz;
 mod geometry_diagnostic;
 mod gpu_prepare;

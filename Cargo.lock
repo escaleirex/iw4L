@@ -160,6 +160,7 @@ dependencies = [
  "ndk-context",
  "ndk-sys",
  "num_enum",
+ "simd_cesu8",
  "thiserror 2.0.19",
 ]
 
@@ -174,6 +175,21 @@ name = "android_log-sys"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84521a3cf562bc62942e294181d9eef17eb38ceb8c68677bc49f144e4c3d4f8d"
+
+[[package]]
+name = "android_runtime"
+version = "0.1.0"
+dependencies = [
+ "asset_transport",
+ "bevy",
+ "bevy_ecs",
+ "bootstrap",
+ "diag",
+ "fastfile_iw4",
+ "jni 0.21.1",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "android_system_properties"
@@ -5434,10 +5450,12 @@ dependencies = [
  "hud",
  "hud_iw4",
  "lighting_iw4",
+ "naga",
  "perf",
  "render_backend",
  "render_frame",
  "render_material",
+ "wgpu",
 ]
 
 [[package]]

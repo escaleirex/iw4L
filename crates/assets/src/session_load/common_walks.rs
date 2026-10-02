@@ -842,6 +842,73 @@ pub(super) fn walk_t5_weapon_common(
     }
 }
 
+fn open_startup_zone(
+    zone: &str,
+    games: &Option<asset_transport::GamesRoot>,
+    map_path: &Path,
+    progress: &LoadProgress,
+) -> Result<(PathBuf, std::sync::Arc<asset_transport::ZoneImage>), String> {
+    let found = match games {
+        Some(root) => find_runtime_zone(root, map_path, zone),
+        None => find_zone_for_tree(map_path, zone),
+    };
+    found.and_then(|found| {
+        let stage = progress.begin_scoped(StageId::CommonAssets, zone, None);
+        let image = open_zone_shared(&found.path)
+            .map(|image| (found.path, image))
+            .map_err(|error| error.to_string());
+        if let Ok((_, image)) = &image {
+            stage.set_bytes(image.bytes.len() as u64);
+        }
+        stage.finish_from(&image);
+        image
+    })
+}
+
+fn absorb_startup_zone(
+    zone: &str,
+    opened: Result<(PathBuf, std::sync::Arc<asset_transport::ZoneImage>), String>,
+    progress: &LoadProgress,
+    seed: MaterialCatalog,
+    report: &mut Vec<String>,
+    reuse_mat: &mut usize,
+    reuse_img: &mut usize,
+    zones_ok: &mut usize,
+    stats: &mut Vec<asset_game::CapturedStringTable>,
+    light_defs: &mut Vec<asset_world::CapturedLightDef>,
+    scripts: &mut crate::ScriptSources,
+) -> MaterialCatalog {
+    match opened {
+        Ok((path, image)) => {
+            let envelope = peek_zone_version(&path)
+                .map(|v| format!("{v:#x}"))
+                .unwrap_or_else(|| "unreadable".into());
+            let pop = lane(image.game).load_material_population(&path, &image, progress, seed);
+            report.extend(pop.report);
+            *reuse_mat = reuse_mat.saturating_add(pop.materials.link_reused_materials);
+            *reuse_img = reuse_img.saturating_add(pop.materials.link_reused_images);
+            report.push(format!(
+                "material generation startup: {zone} {} materials images={} decoded={} envelope={envelope} path={}",
+                pop.materials.materials.len(),
+                pop.materials.images.len(),
+                pop.materials.image_memory().decoded_images,
+                path.display()
+            ));
+            light_defs.extend(pop.light_defs);
+            scripts.overlay(pop.scripts);
+            if zone == "code_post_gfx_mp" {
+                *stats = pop.cac_tables;
+            }
+            *zones_ok += 1;
+            pop.materials
+        }
+        Err(gap) => {
+            report.push(format!("material generation startup gap: {zone}: {gap}"));
+            seed
+        }
+    }
+}
+
 pub(super) async fn walk_startup_material_zones(
     map_path: Option<&PathBuf>,
     progress: &LoadProgress,
@@ -863,31 +930,8 @@ pub(super) async fn walk_startup_material_zones(
         );
     };
     let games = games_root_from_env().ok();
+    let slim = std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1");
 
-    let opened = STARTUP_ZONES
-        .map(|zone| {
-            let games = games.clone();
-            let map_path = map_path.clone();
-            let progress = progress.clone();
-            load_pool().spawn(async move {
-                let found = match &games {
-                    Some(root) => find_runtime_zone(root, &map_path, zone),
-                    None => find_zone_for_tree(&map_path, zone),
-                };
-                found.and_then(|found| {
-                    let stage = progress.begin_scoped(StageId::CommonAssets, zone, None);
-                    let image = open_zone_shared(&found.path)
-                        .map(|image| (found.path, image))
-                        .map_err(|error| error.to_string());
-                    if let Ok((_, image)) = &image {
-                        stage.set_bytes(image.bytes.len() as u64);
-                    }
-                    stage.finish_from(&image);
-                    image
-                })
-            })
-        })
-        .into_iter();
     let mut seed = MaterialCatalog::default();
     let mut report = Vec::new();
     let mut reuse_mat = 0usize;
@@ -896,32 +940,49 @@ pub(super) async fn walk_startup_material_zones(
     let mut stats = Vec::new();
     let mut light_defs = Vec::new();
     let mut scripts = crate::ScriptSources::default();
-    for (zone, task) in STARTUP_ZONES.into_iter().zip(opened) {
-        match task.await {
-            Ok((path, image)) => {
-                let envelope = peek_zone_version(&path)
-                    .map(|v| format!("{v:#x}"))
-                    .unwrap_or_else(|| "unreadable".into());
-                let pop = lane(image.game).load_material_population(&path, &image, progress, seed);
-                report.extend(pop.report);
-                reuse_mat = reuse_mat.saturating_add(pop.materials.link_reused_materials);
-                reuse_img = reuse_img.saturating_add(pop.materials.link_reused_images);
-                report.push(format!(
-                    "material generation startup: {zone} {} materials images={} decoded={} envelope={envelope} path={}",
-                    pop.materials.materials.len(),
-                    pop.materials.images.len(),
-                    pop.materials.image_memory().decoded_images,
-                    path.display()
-                ));
-                seed = pop.materials;
-                light_defs.extend(pop.light_defs);
-                scripts.overlay(pop.scripts);
-                if zone == "code_post_gfx_mp" {
-                    stats = pop.cac_tables;
-                }
-                zones_ok += 1;
-            }
-            Err(gap) => report.push(format!("material generation startup gap: {zone}: {gap}")),
+    if slim {
+        for zone in STARTUP_ZONES {
+            let opened = open_startup_zone(zone, &games, map_path, progress);
+            seed = absorb_startup_zone(
+                zone,
+                opened,
+                progress,
+                seed,
+                &mut report,
+                &mut reuse_mat,
+                &mut reuse_img,
+                &mut zones_ok,
+                &mut stats,
+                &mut light_defs,
+                &mut scripts,
+            );
+            asset_transport::log_rss(&format!("startup {zone}"));
+        }
+    } else {
+        let opened = STARTUP_ZONES
+            .map(|zone| {
+                let games = games.clone();
+                let map_path = map_path.clone();
+                let progress = progress.clone();
+                load_pool().spawn(async move {
+                    open_startup_zone(zone, &games, &map_path, &progress)
+                })
+            })
+            .into_iter();
+        for (zone, task) in STARTUP_ZONES.into_iter().zip(opened) {
+            seed = absorb_startup_zone(
+                zone,
+                task.await,
+                progress,
+                seed,
+                &mut report,
+                &mut reuse_mat,
+                &mut reuse_img,
+                &mut zones_ok,
+                &mut stats,
+                &mut light_defs,
+                &mut scripts,
+            );
         }
     }
     let startup_decoded = seed.image_memory().decoded_images;

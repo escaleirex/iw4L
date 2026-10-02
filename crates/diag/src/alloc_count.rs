@@ -112,9 +112,13 @@ pub fn release_freed_heap() -> std::time::Duration {
     at.elapsed()
 }
 
-#[cfg(windows)]
+// Android's Scudo caps each primary size class at 256 MiB. A load holds more
+// than that in 64-256 KiB blocks (texture payloads, WGSL, clips), and past the
+// cap every such block is its own mapping until an allocation fails with RAM
+// still free.
+#[cfg(any(windows, target_os = "android"))]
 static BACKING: mimalloc::MiMalloc = mimalloc::MiMalloc;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 static BACKING: std::alloc::System = std::alloc::System;
 
 pub struct ProcessCountingAllocator;

@@ -1448,6 +1448,11 @@ impl AssetLinkSink for SoundCatalog {
         pcm: Ptr,
         data_len: usize,
     ) -> Result<()> {
+        if std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1")
+            || std::env::var("IW4L_SOUND").ok().as_deref() == Some("off")
+        {
+            return Ok(());
+        }
         let name = name_at(s, header, 0).unwrap_or_default();
 
         let (format, rate, bits, channels, samples, block_size) =

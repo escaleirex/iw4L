@@ -5,5 +5,7 @@ mod launch;
 mod plugins;
 
 pub use args::{AcceptanceLaunch, LaunchMode, parse_cli};
+#[cfg(target_os = "android")]
+pub use launch::ANDROID_SESSION;
 pub use launch::launch;
 pub use plugins::assemble_listen_app;

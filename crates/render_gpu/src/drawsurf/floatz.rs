@@ -33,6 +33,11 @@ struct ExactFloatZGpu {
 pub struct ExactFloatZResolve {
     pub resolved_frame: Option<u64>,
     shader: Handle<Shader>,
+    /// What the resolved depth is stored as. Post-fx samples it through a
+    /// filterable binding, which `R32Float` only satisfies where the device
+    /// filters 32-bit floats; elsewhere it is `R16Float`, which keeps view
+    /// depth to a few units at the far blur and finer near the eye.
+    format: TextureFormat,
     layout_single: BindGroupLayoutDescriptor,
     layout_msaa: BindGroupLayoutDescriptor,
     params: Buffer,
@@ -84,7 +89,7 @@ impl SpecializedRenderPipeline for ExactFloatZResolve {
                 shader_defs,
                 entry_point: Some("fs_floatz".into()),
                 targets: vec![Some(ColorTargetState {
-                    format: TextureFormat::R32Float,
+                    format: self.format,
                     blend: None,
                     write_mask: ColorWrites::ALL,
                 })],
@@ -108,9 +113,18 @@ fn init_pipeline(
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    let format = if device
+        .features()
+        .contains(bevy::render::settings::WgpuFeatures::FLOAT32_FILTERABLE)
+    {
+        TextureFormat::R32Float
+    } else {
+        TextureFormat::R16Float
+    };
     commands.insert_resource(ExactFloatZResolve {
         prepared: None,
         shader: asset_server.load(SHADER_PATH),
+        format,
         layout_single: BindGroupLayoutDescriptor::new(
             "iw4_floatz_depth_single",
             &BindGroupLayoutEntries::sequential(
@@ -161,7 +175,7 @@ pub(super) fn ensure_target(
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: TextureFormat::R32Float,
+            format: resolve.format,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });

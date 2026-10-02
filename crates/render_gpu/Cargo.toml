@@ -26,6 +26,12 @@ render_backend.workspace = true
 render_frame.workspace = true
 render_material.workspace = true
 bevy.workspace = true
+naga = { version = "29", features = ["wgsl-in", "spv-out"] }
+wgpu = { version = "29", default-features = false }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies.bevy]
+workspace = true
+features = ["x11", "wayland", "bevy_gilrs", "system_clipboard"]

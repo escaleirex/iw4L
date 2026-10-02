@@ -5,6 +5,8 @@ game. Keep them this short: nobody opens a long file twice.
 
 | file | about | when to read |
 |---|---|---|
+| [`ANDROID.md`](ANDROID.md) | ARM64 Gradle build, React Native launcher, SAF and Retroid debugging | developing Android |
+| [`ANDROID_STATUS.md`](ANDROID_STATUS.md) | demonstrated Android capabilities and remaining integration work | checking port progress |
 | [`BUILD.md`](BUILD.md) | system packages per distro (Fedora / Debian / Arch), macOS, what the Windows cross build needs | before your first build |
 | [`RUN.md`](RUN.md) | running (`make map`, `--cmds`), controls frozen until `Playing`, `force_match_start`, sync-by-default, the verb list and the traps | before your first live run |
 | [`WINDOWS.md`](WINDOWS.md) | portable `iw4l.exe`: community updates, shortcuts into CoD, writable `iw4l-artifacts/` | building and running on Windows |

@@ -251,6 +251,15 @@ fn origin_label(origin: ZoneSoundOrigin) -> String {
 }
 
 pub fn gather_sound_sources(games: &GamesRoot, map: &Path) -> SoundSources {
+    if std::env::var("IW4L_SOUND").ok().as_deref() == Some("off")
+        || std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1")
+    {
+        return SoundSources {
+            before_map: SoundCatalog::default(),
+            after_map: Vec::new(),
+            gaps: Vec::new(),
+        };
+    }
     let (before, after) = sound_sources(games, map);
     let mut sources = SoundSources {
         before_map: SoundCatalog::default(),

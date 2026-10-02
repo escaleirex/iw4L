@@ -315,6 +315,43 @@ impl XAnimBuild {
         let _ = self.absorb(local);
     }
 
+    /// Indices change: every edge into this catalog is resolved again after.
+    pub fn retain_keys(&mut self, mut keep: impl FnMut(&XAnimKey) -> bool) -> usize {
+        let catalog = &mut self.catalog;
+        let before = catalog.entries.len();
+        let order = std::mem::take(&mut catalog.order);
+        let entries = std::mem::take(&mut catalog.entries);
+        let zones = std::mem::take(&mut catalog.zones);
+        let decoded = std::mem::take(
+            &mut *catalog
+                .decoded
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+        );
+        catalog.indices.clear();
+        let mut kept_decoded = Vec::new();
+        for (((key, captured), zone), clip) in order
+            .into_iter()
+            .zip(entries)
+            .zip(zones)
+            .zip(decoded.into_iter().chain(std::iter::repeat(None)))
+        {
+            if !keep(&key) {
+                continue;
+            }
+            catalog.indices.insert(key.clone(), catalog.entries.len());
+            catalog.order.push(key);
+            catalog.zones.push(zone);
+            catalog.entries.push(captured);
+            kept_decoded.push(clip);
+        }
+        *catalog
+            .decoded
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = kept_decoded;
+        before - catalog.entries.len()
+    }
+
     pub fn capture_xanim_iw5(
         &mut self,
         s: &fastfile_iw5::ZoneStream<'_>,

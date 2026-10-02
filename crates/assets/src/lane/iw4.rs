@@ -745,6 +745,16 @@ impl ZoneLane for Iw4Lane {
         decode_color_maps: bool,
         material_seed: asset_material::MaterialCatalog,
     ) -> CommonCensus {
+        if std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1") {
+            let census = super::iw4_view::load_common_mp_view_only(
+                path,
+                image,
+                progress,
+                material_seed,
+            );
+            asset_transport::log_rss("slim common_mp");
+            return census;
+        }
         let zone_name = path.file_stem().map_or_else(
             || "common_mp".to_owned(),
             |stem| stem.to_string_lossy().into_owned(),

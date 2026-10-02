@@ -240,6 +240,27 @@ impl WorldWeaponBuild {
             entry.resolve_materials(materials);
         }
     }
+
+    /// Indices change: every edge into this catalog is resolved again after.
+    pub fn retain_keys(&mut self, mut keep: impl FnMut(&WorldWeaponKey) -> bool) -> usize {
+        let catalog = &mut self.catalog;
+        catalog.identity = 0;
+        let before = catalog.entries.len();
+        let order = std::mem::take(&mut catalog.order);
+        let entries = std::mem::take(&mut catalog.entries);
+        let zones = std::mem::take(&mut catalog.zones);
+        catalog.indices.clear();
+        for ((key, entry), zone) in order.into_iter().zip(entries).zip(zones) {
+            if !keep(&key) {
+                continue;
+            }
+            catalog.indices.insert(key.clone(), catalog.entries.len());
+            catalog.order.push(key);
+            catalog.zones.push(zone);
+            catalog.entries.push(entry);
+        }
+        before - catalog.entries.len()
+    }
 }
 
 impl WorldWeaponCatalog {

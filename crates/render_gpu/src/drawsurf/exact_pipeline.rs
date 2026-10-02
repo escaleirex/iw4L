@@ -12,6 +12,7 @@ use bevy::render::render_resource::{
 use bevy::render::renderer::RenderDevice;
 use bevy::tasks::{Task, futures_lite::future};
 
+use super::exact_pipeline_spirv::{spirv_entry_modules, spirv_passthrough};
 use super::sm3_wgsl::{PASS_VERTEX_ENTRY, ValidatedPassWgsl};
 use render_material::PortId;
 
@@ -39,6 +40,7 @@ impl ExactModuleSource {
 pub(super) struct ExactPipelinePlan {
     pub(super) label: String,
     pub(super) fragment_entry: String,
+    pub(super) binding_map: naga::back::spv::BindingMap,
     pub(super) vertex_buffers: Vec<VertexBufferLayout>,
     pub(super) targets: Vec<Option<ColorTargetState>>,
     pub(super) primitive: PrimitiveState,
@@ -56,9 +58,18 @@ enum SlotState {
     Ready(RenderPipeline),
 }
 
+/// On Vulkan a WGSL module stays naga IR for as long as any pipeline holds
+/// it, because the backend compiles each entry point at pipeline creation.
+/// A SPIR-V entry module holds no IR.
+#[derive(Clone, Default)]
+struct PortModules {
+    wgsl: Option<Arc<ShaderModule>>,
+    entries: HashMap<String, Arc<ShaderModule>>,
+}
+
 struct PortBuild {
     module: ModuleKey,
-    created: Option<Arc<ShaderModule>>,
+    created: PortModules,
     pipelines: Vec<(ExactPipelineSlot, RenderPipeline)>,
 }
 
@@ -66,7 +77,7 @@ struct PortBuild {
 pub(super) struct ExactPipelineRegistry {
     slots: Vec<SlotState>,
     by_key: HashMap<super::colour_submit::ExactColourPipelineKey, ExactPipelineSlot>,
-    modules: HashMap<ModuleKey, Arc<ShaderModule>>,
+    modules: HashMap<ModuleKey, PortModules>,
 
     queued: HashMap<
         ModuleKey,
@@ -76,6 +87,9 @@ pub(super) struct ExactPipelineRegistry {
         ),
     >,
     jobs: Vec<Task<PortBuild>>,
+    /// Ports with a build running. A second build of the same port started
+    /// before the first lands would compile the same module again.
+    building: bevy::platform::collections::HashSet<ModuleKey>,
 
     layouts: Mutex<HashMap<BindGroupLayoutDescriptor, BindGroupLayout>>,
 
@@ -165,12 +179,23 @@ impl ExactPipelineRegistry {
         }
 
         let pool = assets::load_pool();
-        for (module, (source, plans)) in self.queued.drain() {
+        let spirv = spirv_passthrough(device);
+        let idle: Vec<ModuleKey> = self
+            .queued
+            .keys()
+            .filter(|module| !self.building.contains(*module))
+            .copied()
+            .collect();
+        for module in idle {
+            let Some((source, plans)) = self.queued.remove(&module) else {
+                continue;
+            };
             let device = device.clone();
-            let existing = self.modules.get(&module).cloned();
-            self.jobs.push(
-                pool.spawn(async move { build_port(&device, module, source, existing, plans) }),
-            );
+            let existing = self.modules.get(&module).cloned().unwrap_or_default();
+            self.building.insert(module);
+            self.jobs.push(pool.spawn(async move {
+                build_port(&device, module, source, existing, plans, spirv)
+            }));
         }
     }
 
@@ -183,9 +208,12 @@ impl ExactPipelineRegistry {
             };
 
             drop(self.jobs.swap_remove(index));
-            if let Some(created) = build.created {
-                self.modules.insert(build.module, created);
+            self.building.remove(&build.module);
+            let held = self.modules.entry(build.module).or_default();
+            if let Some(created) = build.created.wgsl {
+                held.wgsl = Some(created);
             }
+            held.entries.extend(build.created.entries);
             for (slot, pipeline) in build.pipelines {
                 self.slots[slot.0 as usize] = SlotState::Ready(pipeline);
             }
@@ -193,7 +221,10 @@ impl ExactPipelineRegistry {
     }
 
     pub(super) fn module_n(&self) -> usize {
-        self.modules.len()
+        self.modules
+            .values()
+            .map(|held| usize::from(held.wgsl.is_some()) + held.entries.len())
+            .sum()
     }
 
     pub(super) fn building_n(&self) -> usize {
@@ -205,8 +236,9 @@ fn build_port(
     device: &RenderDevice,
     module: ModuleKey,
     source: ExactModuleSource,
-    existing: Option<Arc<ShaderModule>>,
+    existing: PortModules,
     plans: Vec<(ExactPipelineSlot, ExactPipelinePlan)>,
+    spirv: bool,
 ) -> PortBuild {
     let label = format!(
         "iw4_exact_colour/{:016x}/{}{}",
@@ -219,8 +251,62 @@ fn build_port(
         }
     );
 
-    let (shader, created) = match existing {
-        Some(shader) => (shader, None),
+    let mut created = PortModules::default();
+    if spirv && existing.wgsl.is_none() {
+        let mut missing: Vec<String> = std::iter::once(PASS_VERTEX_ENTRY)
+            .chain(plans.iter().map(|(_, plan)| plan.fragment_entry.as_str()))
+            .filter(|entry| !existing.entries.contains_key(*entry))
+            .map(str::to_owned)
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        let binding_map = plans
+            .first()
+            .map(|(_, plan)| plan.binding_map.clone())
+            .unwrap_or_default();
+        if !missing.is_empty() {
+            match spirv_entry_modules(device, &label, source.wgsl(), &binding_map, &missing) {
+                Ok(entries) => created.entries = entries,
+                Err(error) => {
+                    diag::warn!(
+                        World,
+                        "exact pipelines: SPIR-V for {label} refused ({error}); building from WGSL"
+                    );
+                }
+            }
+        }
+        let spirv_ready = std::iter::once(PASS_VERTEX_ENTRY)
+            .chain(plans.iter().map(|(_, plan)| plan.fragment_entry.as_str()))
+            .all(|entry| {
+                existing.entries.contains_key(entry) || created.entries.contains_key(entry)
+            });
+        if spirv_ready {
+            let entry = |name: &str| {
+                existing
+                    .entries
+                    .get(name)
+                    .or_else(|| created.entries.get(name))
+                    .expect("every entry point of the plans was compiled")
+                    .clone()
+            };
+            let vertex = entry(PASS_VERTEX_ENTRY);
+            let pipelines = plans
+                .into_iter()
+                .map(|(slot, plan)| {
+                    let fragment = entry(&plan.fragment_entry);
+                    (slot, build_pipeline(device, &vertex, &fragment, &plan))
+                })
+                .collect();
+            return PortBuild {
+                module,
+                created,
+                pipelines,
+            };
+        }
+    }
+
+    let shader = match existing.wgsl {
+        Some(shader) => shader,
         None => {
             let shader = Arc::new(unsafe {
                 device.create_shader_module(ShaderModuleDescriptor {
@@ -228,12 +314,13 @@ fn build_port(
                     source: ShaderSource::Wgsl(std::borrow::Cow::Borrowed(source.wgsl())),
                 })
             });
-            (shader.clone(), Some(shader))
+            created.wgsl = Some(shader.clone());
+            shader
         }
     };
     let pipelines = plans
         .into_iter()
-        .map(|(slot, plan)| (slot, build_pipeline(device, &shader, &plan)))
+        .map(|(slot, plan)| (slot, build_pipeline(device, &shader, &shader, &plan)))
         .collect();
     PortBuild {
         module,
@@ -244,7 +331,8 @@ fn build_port(
 
 fn build_pipeline(
     device: &RenderDevice,
-    shader: &ShaderModule,
+    vertex: &ShaderModule,
+    fragment: &ShaderModule,
     plan: &ExactPipelinePlan,
 ) -> RenderPipeline {
     let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
@@ -269,13 +357,13 @@ fn build_pipeline(
         label: Some(&plan.label),
         layout: Some(&layout),
         vertex: RawVertexState {
-            module: shader,
+            module: vertex,
             entry_point: Some(PASS_VERTEX_ENTRY),
             buffers: &buffers,
             compilation_options: compilation_options.clone(),
         },
         fragment: Some(RawFragmentState {
-            module: shader,
+            module: fragment,
             entry_point: Some(&plan.fragment_entry),
             targets: &plan.targets,
             compilation_options,

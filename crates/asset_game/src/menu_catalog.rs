@@ -549,6 +549,14 @@ pub fn ui_games_root(games: &GamesRoot) -> Result<GamesRoot, String> {
 }
 
 pub fn load_ui_menu_catalog(games: &GamesRoot) -> (MenuCatalog, Vec<String>) {
+    load_ui_menu_catalog_inner(games, true)
+}
+
+pub fn load_ui_menu_defs(games: &GamesRoot) -> (MenuCatalog, Vec<String>) {
+    load_ui_menu_catalog_inner(games, false)
+}
+
+fn load_ui_menu_catalog_inner(games: &GamesRoot, resolve_images: bool) -> (MenuCatalog, Vec<String>) {
     let mut catalog = MenuCatalog::default();
     let mut report = Vec::new();
     let games = match ui_games_root(games) {
@@ -557,8 +565,9 @@ pub fn load_ui_menu_catalog(games: &GamesRoot) -> (MenuCatalog, Vec<String>) {
     };
     report.push(format!("menu asset root (IW4): {}", games.0.display()));
     for zone in UI_MENU_ZONES {
+        let image_root = resolve_images.then_some(games.0.as_path());
         match find_zone_file(&games, &format!("iw4:{zone}")) {
-            Ok(found) => match load_menu_catalog_with_iwd(&found.path, Some(&games.0)) {
+            Ok(found) => match load_menu_catalog_with_iwd(&found.path, image_root) {
                 Ok(part) => {
                     report.push(format!(
                         "menu catalog: {zone} {} menus ({} lists, {} assets, {} font headers, {} fonts; main={}, main_text={}) from {}",

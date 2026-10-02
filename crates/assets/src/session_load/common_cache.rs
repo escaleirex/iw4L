@@ -261,11 +261,58 @@ pub async fn load_shell_common(games: asset_transport::GamesRoot) -> ShellCommon
     }
 }
 
+fn android_slim() -> bool {
+    std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1")
+}
+
+fn load_localize_now(
+    anchor: Option<&Path>,
+    progress: &LoadProgress,
+) -> (LocalizeCatalog, Vec<String>) {
+    if android_slim() {
+        progress.record_skipped(StageId::Localization);
+        return (
+            LocalizeCatalog::default(),
+            vec!["android slim: localize skipped".into()],
+        );
+    }
+    let mut report = Vec::new();
+    let strings = match anchor {
+        Some(path) => {
+            let stage = progress.begin(StageId::Localization, None);
+            let catalog = load_localized_strings_beside(path, &mut report, &stage);
+            stage.done();
+            catalog
+        }
+        None => {
+            progress.record_skipped(StageId::Localization);
+            report.push("localize: no runtime common_mp — every on-screen string is a gap".into());
+            LocalizeCatalog::default()
+        }
+    };
+    (strings, report)
+}
+
+fn open_common_zone(
+    anchor: Option<PathBuf>,
+    progress: &LoadProgress,
+) -> Option<(PathBuf, Result<Arc<asset_transport::ZoneImage>, asset_transport::ZoneOpenError>)> {
+    let Some(path) = anchor else {
+        progress.record_skipped_scoped(StageId::CommonAssets, "common_mp");
+        return None;
+    };
+    let stage = progress.begin_scoped(StageId::CommonAssets, "common_mp", None);
+    let opened = open_zone_shared(&path);
+    finish_zone_open(stage, &opened);
+    Some((path, opened))
+}
+
 async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
     let started = std::time::Instant::now();
     let progress = LoadProgress::default();
     let pool = load_pool();
     let anchor = key.runtime.clone();
+    let slim = android_slim();
 
     let startup_walk = {
         let anchor = anchor.clone();
@@ -310,19 +357,12 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
         }
     };
 
-    let common_open = {
+    let common_open = if slim {
+        None
+    } else {
         let anchor = anchor.clone();
         let progress = progress.clone();
-        pool.spawn(async move {
-            let Some(path) = anchor else {
-                progress.record_skipped_scoped(StageId::CommonAssets, "common_mp");
-                return None;
-            };
-            let stage = progress.begin_scoped(StageId::CommonAssets, "common_mp", None);
-            let opened = open_zone_shared(&path);
-            finish_zone_open(stage, &opened);
-            Some((path, opened))
-        })
+        Some(pool.spawn(async move { open_common_zone(anchor, &progress) }))
     };
 
     let t5_common_prep = {
@@ -330,28 +370,12 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
         let progress = progress.clone();
         pool.spawn(async move { t5_weapon_common_prep(anchor.as_deref(), &progress) })
     };
-    let localize_walk = {
+    let localize_walk = if slim {
+        None
+    } else {
         let anchor = anchor.clone();
         let progress = progress.clone();
-        pool.spawn(async move {
-            let mut report = Vec::new();
-            let strings = match &anchor {
-                Some(path) => {
-                    let stage = progress.begin(StageId::Localization, None);
-                    let catalog = load_localized_strings_beside(path, &mut report, &stage);
-                    stage.done();
-                    catalog
-                }
-                None => {
-                    progress.record_skipped(StageId::Localization);
-                    report.push(
-                        "localize: no runtime common_mp — every on-screen string is a gap".into(),
-                    );
-                    LocalizeCatalog::default()
-                }
-            };
-            (strings, report)
-        })
+        Some(pool.spawn(async move { load_localize_now(anchor.as_deref(), &progress) }))
     };
 
     let (material_seed, mut common_report, iw4_stats, startup_light_defs, startup_scripts) =
@@ -430,7 +454,15 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
     let mut fpv_plan = None;
     let mut iw4_census_stats = Vec::new();
 
-    let common_opened = common_open.await;
+    let common_opened = match common_open {
+        Some(task) => task.await,
+        None => {
+            asset_transport::log_rss("before common_mp");
+            let opened = open_common_zone(anchor.clone(), &progress);
+            asset_transport::log_rss("after common_mp open");
+            opened
+        }
+    };
 
     let (
         mut weapons,
@@ -448,7 +480,12 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
         Some((path, Ok(image))) => {
             let mut census =
                 lane(image.game).load_common_mp(&path, &image, &progress, true, material_seed);
-            fpv_plan = census.pending_images.take().filter(|plan| !plan.is_empty());
+            fpv_plan = if slim {
+                None
+            } else {
+                census.pending_images.take().filter(|plan| !plan.is_empty())
+            };
+            asset_transport::log_rss("after common_mp walk");
             shared_surfaces = census.shared_surfaces;
             common_scene_models = census.scene_models;
             common_light_defs.extend(census.light_defs);
@@ -651,7 +688,13 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
             ))
             .collect::<Vec<_>>()
     ));
-    let (strings, localize_report) = localize_walk.await;
+    let (strings, localize_report) = match localize_walk {
+        Some(task) => task.await,
+        None => {
+            asset_transport::log_rss("before localize");
+            load_localize_now(anchor.as_deref(), &progress)
+        }
+    };
     common_report.extend(progress.timing_report());
     let prepared_ms = started.elapsed().as_secs_f32() * 1000.0;
     diag::info!(

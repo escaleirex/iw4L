@@ -253,6 +253,8 @@ pub(crate) struct CommonWalkSink {
         BTreeMap<String, Result<asset_world::FilmVision, asset_world::FilmVisionParseError>>,
 
     pub sound: Option<asset_audio::ZoneSoundCapture>,
+
+    pub view_only: bool,
 }
 
 impl ZoneWalkSink {
@@ -1432,6 +1434,11 @@ impl AssetLinkSink for CommonWalkSink {
         if ty == AssetType::Tracer {
             self.tracers.note_loaded(slot, insert_slot);
         }
+        if ty == AssetType::XModel && self.view_only {
+            self.fpv_meshes.capture(stream, &self.materials);
+            self.world_weapons.capture(stream, &self.materials);
+            return Ok(());
+        }
         if ty == AssetType::XModel {
             if let Some(geometry) = stream.xmodel()
                 && let Some(name) = geometry.name.and_then(|p| stream.cstr(p).ok())
@@ -1549,6 +1556,9 @@ impl AssetLinkSink for CommonWalkSink {
         s: &ZoneStream<'_>,
         geometry: FxEffectDefGeometry,
     ) -> fastfile_iw4::Result<()> {
+        if self.view_only {
+            return Ok(());
+        }
         self.fx
             .capture(s, geometry, &self.materials, &self.xmodel_names)
     }
@@ -1558,6 +1568,9 @@ impl AssetLinkSink for CommonWalkSink {
         s: &ZoneStream<'_>,
         geometry: fastfile_iw4::FxImpactTableGeometry,
     ) -> fastfile_iw4::Result<()> {
+        if self.view_only {
+            return Ok(());
+        }
         self.impact_fx.capture(s, geometry, &self.fx)
     }
 
@@ -1566,6 +1579,9 @@ impl AssetLinkSink for CommonWalkSink {
         s: &ZoneStream<'_>,
         geometry: fastfile_iw4::TracerDefGeometry,
     ) -> fastfile_iw4::Result<()> {
+        if self.view_only {
+            return Ok(());
+        }
         capture_tracer_named(&mut self.tracers, &self.materials, s, geometry)
     }
 

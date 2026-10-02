@@ -150,6 +150,11 @@ impl ZoneSoundCapture {
 }
 
 fn is_sound_source(path: &Path, game: ZoneGame) -> bool {
+    if std::env::var("IW4L_SOUND").ok().as_deref() == Some("off")
+        || std::env::var("IW4L_ANDROID_SLIM").ok().as_deref() == Some("1")
+    {
+        return false;
+    }
     let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
         return false;
     };

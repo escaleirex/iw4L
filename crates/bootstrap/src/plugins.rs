@@ -104,6 +104,10 @@ pub fn default_plugins_with_quiet_log(mut window: WindowPlugin) -> bevy::app::Pl
         | WgpuFeatures::TEXTURE_BINDING_ARRAY
         | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
         | WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY;
+    #[cfg(target_os = "android")]
+    {
+        wgpu.backends = Some(bevy::render::settings::Backends::VULKAN);
+    }
     let plugins = DefaultPlugins
         .set(window)
         .set(LogPlugin {

@@ -146,8 +146,16 @@ impl ExactTextureTable {
                 let index = u16::try_from(index).expect("capacities fit the 16-bit slot half");
                 self.views[lane_i].push(lane.view.clone());
                 self.view_index.insert(lane.view.id(), index);
-                if lane.identity == UploadedTextureIdentity::Code(super::CODE_TEXTURE_SHADOWMAP_SUN)
-                {
+                let unfilterable = match lane.identity {
+                    UploadedTextureIdentity::Code(id) => {
+                        id == super::CODE_TEXTURE_SHADOWMAP_SUN
+                            || id == super::CODE_TEXTURE_FLOATZ
+                            || id == super::CODE_TEXTURE_SHADOWMAP_SPOT
+                    }
+                    UploadedTextureIdentity::SpotShadowRt(_) => true,
+                    _ => false,
+                };
+                if unfilterable {
                     self.sun_shadow_indices.push(index);
                 }
                 self.binds = None;
@@ -195,7 +203,12 @@ impl ExactTextureTable {
         if self.binds.is_none() {
             let bgl = registry.bind_group_layout(device, layout);
             let placeholder_2d = self.views[0][0].clone();
-            let scene = self.create_bind_group(device, &bgl, "iw4_texture_table_scene", None);
+            let filter_r32 = device
+                .features()
+                .contains(bevy::render::render_resource::WgpuFeatures::FLOAT32_FILTERABLE);
+            let scene_mask = (!filter_r32).then_some(&placeholder_2d);
+            let scene =
+                self.create_bind_group(device, &bgl, "iw4_texture_table_scene", scene_mask);
             let sun_caster = if self.sun_shadow_indices.is_empty() {
                 scene.clone()
             } else {

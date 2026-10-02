@@ -5162,6 +5162,14 @@ impl Default for WeaponRow {
     }
 }
 
+/// Lower-cased, the way the mesh and clip catalogs key their names.
+#[derive(Clone, Debug, Default)]
+pub struct WeaponViewAssetNames {
+    pub models: HashSet<(crate::AssetNamespace, String)>,
+    pub world_models: HashSet<(crate::AssetNamespace, String)>,
+    pub clips: HashSet<(crate::AssetNamespace, String)>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct WeaponRegistry {
     rows: Vec<WeaponRow>,
@@ -7423,6 +7431,39 @@ impl WeaponRegistry {
 
     pub fn sz_xanims_of(&self, index: u32) -> Option<&[Option<String>; WEAPON_ANIM_SLOTS]> {
         self.rows.get(index as usize).map(|row| &row.sz_xanims)
+    }
+
+    /// World models belong here: `configuration_admission` refuses a row
+    /// whose world model is missing.
+    pub fn view_asset_names(&self) -> WeaponViewAssetNames {
+        let mut names = WeaponViewAssetNames::default();
+        for row in self.rows.iter().skip(1) {
+            let models = [
+                &row.gun_xmodel,
+                &row.secondary_gun_xmodel,
+                &row.hand_xmodel,
+                &row.rocket_model,
+                &row.knife_xmodel,
+            ];
+            for name in models.into_iter().flatten() {
+                names.models.insert((row.namespace, name.to_ascii_lowercase()));
+            }
+            for name in &row.attachment_view_models {
+                names.models.insert((row.namespace, name.to_ascii_lowercase()));
+            }
+            for name in row.world_model.iter().chain(&row.attachment_world_models) {
+                names.world_models.insert((row.namespace, name.to_ascii_lowercase()));
+            }
+            let clips = row
+                .sz_xanims
+                .iter()
+                .chain(&row.sz_xanims_right)
+                .chain(&row.sz_xanims_left);
+            for name in clips.flatten() {
+                names.clips.insert((row.namespace, name.to_ascii_lowercase()));
+            }
+        }
+        names
     }
 
     pub fn timers_of(&self, index: u32) -> (i32, i32) {

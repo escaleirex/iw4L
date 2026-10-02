@@ -13,5 +13,10 @@ serde_json = { workspace = true }
 mimalloc = { version = "0.1", default-features = false }
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
 
+# The runtime is a library the activity dlopens; bionic refuses initial-exec
+# TLS in one, so mimalloc's thread-locals take the local-dynamic model there.
+[target.'cfg(target_os = "android")'.dependencies]
+mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls"] }
+
 [lints]
 workspace = true

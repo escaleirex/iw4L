@@ -221,6 +221,27 @@ fn flight_for(key: &ZoneSourceKey) -> Arc<Mutex<()>> {
     Arc::clone(flights.entry(key.clone()).or_default())
 }
 
+pub fn log_rss(label: &str) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let kb = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("VmRSS:")
+                        .and_then(|rest| rest.split_whitespace().next())
+                        .and_then(|kb| kb.parse::<u64>().ok())
+                })
+            })
+            .unwrap_or(0);
+        eprintln!("rss {label}: {kb} KB");
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = label;
+    }
+}
+
 pub fn open_zone(path: impl AsRef<Path>) -> Result<ZoneImage, ZoneOpenError> {
     let path = path.as_ref();
     let result = std::fs::read(path)
@@ -230,7 +251,24 @@ pub fn open_zone(path: impl AsRef<Path>) -> Result<ZoneImage, ZoneOpenError> {
         path: path.to_owned(),
         source: Box::new(source),
     })?;
+    #[cfg(target_os = "android")]
+    eprintln!(
+        "open zone {} KB {}",
+        image.bytes.len() / 1024,
+        path.display()
+    );
     Ok(image)
+}
+
+pub fn open_zone_from(file: &crate::data_source::GameDataFile) -> Result<ZoneImage, ZoneOpenError> {
+    file.source
+        .read(&file.path)
+        .map_err(ZoneOpenError::Io)
+        .and_then(|bytes| parse_zone_image(&bytes))
+        .map_err(|source| ZoneOpenError::AtPath {
+            path: file.path.clone().into(),
+            source: Box::new(source),
+        })
 }
 
 fn select_iw4_table(image: &[u8]) -> Result<WireAssetTable<'_>, ZoneOpenError> {
@@ -388,6 +426,11 @@ pub fn xfile_arena_row(
 
 impl ZoneMemory {
     pub fn for_header(header: &ZoneHeader) -> ZoneMemory {
+        #[cfg(target_os = "android")]
+        {
+            let bytes: u64 = header.block_size.iter().map(|size| u64::from(*size)).sum();
+            eprintln!("zone arena {} KB", bytes / 1024);
+        }
         let blocks = std::array::from_fn(|i| vec![0u8; header.block_size[i] as usize]);
         let insert_map = vec![0u8; ZoneStream::insert_map_len(header)];
         ZoneMemory { blocks, insert_map }

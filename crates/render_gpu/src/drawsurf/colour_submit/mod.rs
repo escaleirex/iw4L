@@ -616,6 +616,10 @@ fn exact_pipeline_plan(
             count: key.samples,
             ..Default::default()
         },
+        binding_map: super::exact_pipeline_spirv::spirv_binding_map(&[
+            &port.constants_layout,
+            &port.textures_layout,
+        ]),
         constants_layout: registry.bind_group_layout(device, &port.constants_layout),
         textures_layout: registry.bind_group_layout(device, &port.textures_layout),
     };

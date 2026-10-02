@@ -5,6 +5,14 @@
 /target/
 **/target/
 /dist/
+/node_modules/
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/app/.cxx/
+/android/local.properties
+/context/
+*.keystore
 
 # Runtime output next to the binary / cwd.
 iw4l-artifacts
